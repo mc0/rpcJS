@@ -10,7 +10,6 @@ if (cluster.isMaster) {
             minWorkers = require('os').cpus().length, // the minimum number of workers we should have
             maxExtraWorkerPercent = 10, // the maximum extra workers at any given time for requests per sec
             requestsPerIPPerSecond = 5, // requests allowed per ip per second
-            workers = [], // the array of workers as cluster forks
             workerCount = 0, // a counter for workers to bypass using .length
             requestCount = 0, // the number of requests during a given timeframe (around one second)
             lastRequest = 0, // the most recent request's time
@@ -18,7 +17,7 @@ if (cluster.isMaster) {
             attackersOrdered = [], // used for cleaning up quickly
             startWorker, worker, handleMessage;
 
-        // handle the messages from the workers
+        // handle messages from the workers such as requests for attacker detection
         handleMessage = function(msg) {
             if (!msg || !msg.cmd) {
                 return;
@@ -43,39 +42,32 @@ if (cluster.isMaster) {
                         }
                     }
                     break;
-                case 'online':
-                    this.send({'cmd': 'updateAttackers', 'attackers': attackers});
-                    break;
             }
         };
 
-        // start a worker and add it to the pool of workers
-        startWorker = function() {
-            var worker = cluster.fork();
-            workers.push(worker);
-            workerCount++;
-            worker.on('message', handleMessage);
-            console.log('started', worker.pid, workers.length, workerCount);
-        };
+        // send the attacker list to a new worker
+        cluster.on('online', function(worker) {
+            worker.send({'cmd': 'updateAttackers', 'attackers': attackers});
+        });
 
-        // if a worker dies, remove it from the pool of workers and start a new worker if we have less than the minimum left
-        cluster.on('death', function(worker) {
-            var i = workers.length;
-            while (i--) {
-                if (workers[i] == worker) {
-                    workerCount--;
-                    workers.splice(i, 1);
-                    break;
-                }
-            }
+        // if a worker exits, start a new worker if we have less than the minimum remaining
+        cluster.on('exit', function(worker) {
+            workerCount--;
 
-            console.log('died', worker.pid, workers.length, workerCount);
-
+            console.log('died', worker.process.pid, workerCount);
             if (workerCount < minWorkers) {
                 // ensure we have at least the minimum workers
                 startWorker();
             }
         });
+
+        // start a worker and add it to the pool of workers
+        startWorker = function() {
+            var worker = cluster.fork();
+            workerCount++;
+            worker.on('online', handleMessage);
+            console.log('started', worker.process.pid, workerCount);
+        };
 
         // reset the attacker checking on (approximately) 1s intervals
         setInterval(function() {
@@ -84,9 +76,9 @@ if (cluster.isMaster) {
 
         // propogate the attackers array to workers every 300ms
         setInterval(function() {
-            var i = workers.length;
-            while (i--) {
-                workers[i].send({'cmd': 'updateAttackers', 'attackers': attackers});
+            var i;
+            for (i in cluster.workers) {
+                cluster.workers[i].send({'cmd': 'updateAttackers', 'attackers': attackers});
             }
         }, 300);
 
@@ -131,10 +123,14 @@ if (cluster.isMaster) {
 
                 // deallocate if after 8 intervals we are still over allocated
                 if (overAllocations >= 8 && workerCount > minWorkers) {
-                    var worker = workers[workers.length - 1];
-                    if (worker) {
-                        worker.kill();
-                        overAllocations = 0;
+                    var worker, i;
+                    for (i in cluster.workers) {
+                        workerk = cluster.workers[i];
+                        if (worker) {
+                            worker.kill();
+                            overAllocations = 0;
+                        }
+                        break;
                     }
                 }
             }

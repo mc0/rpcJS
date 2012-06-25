@@ -7,7 +7,7 @@ It should be able to handle malicious users, misbehaving servers, and access fro
 (You can assume the client itself is trusted, though.)
 */
 var http = require('http'),
-    sys = require('sys'),
+    util = require('util'),
     events = require('events'),
     url = require('url'),
     querystring = require('querystring'),
@@ -23,7 +23,7 @@ var klassProto = {
         process.send({'cmd': 'request', 'ipAddress': request.connection.address().address});
 
         // add the default fail callback
-        this.fail(function(error) {
+        this.on('fail', function(error) {
             if (error) {
                 this.error = error;
                 response.writeHead(501, {'Content-Type': 'text/plain'});
@@ -39,7 +39,7 @@ var klassProto = {
         }.bind(this));
 
         // add the default done callback
-        this.done(function() {
+        this.on('done', function() {
             response.writeHead(200, {'Content-Type': 'text/plain'});
             response.end(JSON.stringify(this.response));
         }.bind(this));
@@ -59,13 +59,13 @@ var klassProto = {
             request.on('end', function() {
                 postBody = querystring.parse(postBody.join(''));
                 if (typeof postBody != 'object') {
-                    rpc.reject(RPC.errorObjects.INVALID_REQUEST);
+                    rpc.emit('fail', RPC.errorObjects.INVALID_REQUEST);
                     return;
                 }
 
                 rpc.currentMethod = postBody.method;
                 rpc.currentRequest = postBody;
-                rpc.trigger('parsed');
+                rpc.emit('parsed');
             });
         } else {
             var queryObject = url.parse(request.url, true).query;
@@ -73,16 +73,16 @@ var klassProto = {
             this.currentRequest = queryObject;
 
             if (typeof queryObject != 'object') {
-                this.reject(RPC.errorObjects.INVALID_REQUEST);
+                this.emit('fail', RPC.errorObjects.INVALID_REQUEST);
                 return;
             }
-            this.trigger('parsed');
+            this.emit('parsed');
         }
     },
 
     run: function() {
         if (!this.calls[this.currentMethod]) {
-            this.reject(RPC.errorObjects.METHOD_NOT_FOUND);
+            this.emit('fail', RPC.errorObjects.METHOD_NOT_FOUND);
             return;
         }
 
@@ -97,7 +97,7 @@ var klassProto = {
                 return;
             }
             var data = [],
-                rpc = this;
+                self = this;
 
             var request = http.get(url.parse(options.url));
             request.on('response', function(response) {
@@ -105,35 +105,41 @@ var klassProto = {
                     data.push(chunk.toString());
                 });
                 response.on('end', function(options) {
-                    rpc.response = {'contents': data.join('')};
+                    self.response = {'contents': data.join('')};
                     data = [];
-                    rpc.resolve();
+                    self.emit('done');
                 });
             });
             request.on('error', function(e) {
-                rpc.response = {'contents': '', 'error': e.message};
-                rpc.reject();
+                self.response = {'contents': '', 'error': e.message};
+                self.emit('fail');
             });
         }
     }
 };
 
+
 // define our constructor
 RPC = function() {
     this.init.apply(this, arguments);
-    this.super_.call(this);
+    this.constructor.super_.call(this);
 };
+
+// inherit from EventEmitter
+util.inherits(RPC, events.EventEmitter);
+
 // static properties
 RPC.errorObjects = {
     'INVALID_REQUEST': new errorObject(1, 'An invalid request was received.  Please check the post body or query string.'),
     'METHOD_NOT_FOUND': new errorObject(2, 'The method was not found or no method was provided.')
 };
-// setup our prototype
-RPC.prototype = klassProto;
-// inherit from EventEmitter
-sys.inherits(RPC, events.EventEmitter);
 
-if ((module && module.exports || exports)) {
-    module = module || {};
-    module.exports = exports = RPC;
+// setup our prototype
+var key;
+for (key in klassProto) {
+    RPC.prototype[key] = klassProto[key];
+}
+
+if (module && module.exports) {
+    module.exports = RPC;
 }
